@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Breakdance Coach — System Architecture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0f;
+      --surface: #111118;
+      --border: #1e1e2e;
+      --accent: #7c6cfc;
+      --accent2: #fc6c9c;
+      --text: #e2e2f0;
+      --muted: #6b6b8a;
+      --mono: 'Space Mono', monospace;
+      --sans: 'DM Sans', sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-weight: 300;
+      min-height: 100vh;
+      padding: 3rem 2rem;
+    }
+
+    header {
+      max-width: 900px;
+      margin: 0 auto 3rem;
+      border-left: 2px solid var(--accent);
+      padding-left: 1.5rem;
+    }
+
+    header .label {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: 0.5rem;
+    }
+
+    header h1 {
+      font-family: var(--mono);
+      font-size: clamp(1.4rem, 4vw, 2rem);
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
+    }
+
+    header p {
+      margin-top: 0.75rem;
+      font-size: 0.95rem;
+      color: var(--muted);
+      max-width: 540px;
+      line-height: 1.7;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 1.25rem;
+    }
+
+    .badge {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.08em;
+      padding: 0.3rem 0.7rem;
+      border-radius: 2px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .badge.highlight { border-color: var(--accent); color: var(--accent); }
+
+    .diagram-wrapper {
+      max-width: 900px;
+      margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2rem;
+      position: relative;
+    }
+
+    .diagram-wrapper::before {
+      content: 'architecture.mmd';
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      color: var(--muted);
+      position: absolute;
+      top: 1rem;
+      right: 1.25rem;
+      letter-spacing: 0.05em;
+    }
+
+    #diagram {
+      width: 100%;
+      overflow-x: auto;
+    }
+
+    #diagram svg {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 0 auto;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 4rem 0;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+    }
+
+    .loading span {
+      animation: blink 1.2s step-end infinite;
+    }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    .legend {
+      max-width: 900px;
+      margin: 2rem auto 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+
+    .legend-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1rem 1.25rem;
+    }
+
+    .legend-item .layer {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 0.4rem;
+    }
+
+    .legend-item p {
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .l-input   { color: #6cb8fc; }
+    .l-vision  { color: #a56cfc; }
+    .l-compare { color: #fc8c6c; }
+    .l-score   { color: #6cfca8; }
+    .l-output  { color: #fc6c9c; }
+
+    footer {
+      max-width: 900px;
+      margin: 3rem auto 0;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    footer span {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+    }
+
+    footer a {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--accent);
+      text-decoration: none;
+      letter-spacing: 0.05em;
+    }
+
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="label">System Design / v1.0</div>
+    <h1>Breakdance Coach<br/>Architecture</h1>
+    <p>Real-time skeletal keypoint tracking pipeline with DTW-based sequence comparison, keyframe thresholding scorer, and live OpenCV overlay.</p>
+    <div class="badges">
+      <span class="badge highlight">MediaPipe</span>
+      <span class="badge highlight">DTW</span>
+      <span class="badge">Python 3.11</span>
+      <span class="badge">OpenCV</span>
+      <span class="badge">NumPy</span>
+      <span class="badge">asyncio</span>
+      <span class="badge">Docker</span>
+    </div>
+  </header>
+
+  <div class="diagram-wrapper">
+    <div id="diagram"><div class="loading">Rendering diagram<span>_</span></div></div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item">
+      <div class="layer l-input">Input layer</div>
+      <p>Webcam feed or sample video. Reference moves stored as .npy sequences + JSON metadata.</p>
+    </div>
+    <div class="legend-item">
+      <div class="layer l-vision">Vision & preprocessing</div>
+      <p>MediaPipe extracts 33 landmarks. Coordinates normalized to hip-center origin and buffered in a 60-frame deque.</p>
+    </div>
+    <div class="legend-item">
+      <div class="layer l-compare">Comparison engine</div>
+      <p>Async DTW aligns user sequence to reference. Embedding lookup via cosine similarity for move recognition.</p>
+    </div>
+    <div class="legend-item">
+      <div class="layer l-score">Scoring engine</div>
+      <p>Keyframe detector triggers joint-angle checks. Thresholding awards 100 / 40 / 0 pts. Combo multiplier on streaks.</p>
+    </div>
+    <div class="legend-item">
+      <div class="layer l-output">Output layer</div>
+      <p>OpenCV renders skeleton overlay, per-joint correction hints, and a live score HUD with letter grade.</p>
+    </div>
+  </div>
+
+  <footer>
+    <span>breakdance-coach &mdash; MIT license</span>
+    <a href="../README.md">← back to README</a>
+  </footer>
+
+  <script type="module">
+    import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+
+    const diagram = `flowchart TD
+      subgraph INPUT["Input layer"]
+        A([Webcam / video file])
+        B[(Reference move library\\nnumpy .npy + JSON)]
+      end
+
+      subgraph VISION["Vision & preprocessing"]
+        C[MediaPipe Pose Estimator\\n33 landmarks x,y,z,vis]
+        D[Normalize keypoints\\nhip-center origin, torso scale]
+        E[Circular buffer\\ndeque maxlen=60 frames]
+      end
+
+      subgraph COMPARE["Comparison engine"]
+        F[DTW engine\\nfastdtw O-n time]
+        G[Embedding lookup\\ncosine sim via FAISS]
+        H{Sequence\\naligned?}
+      end
+
+      subgraph SCORE["Scoring engine"]
+        I[Keyframe detector\\npeak-pose timestamp]
+        J[Joint angle calculator\\nangle at each landmark]
+        K{Within\\nthreshold?}
+        L[Perfect 100 pts]
+        M[Close 40 pts]
+        N[Miss 0 pts]
+        O[Combo multiplier\\nstreak x bonus]
+        P[Rolling score window]
+      end
+
+      subgraph OUTPUT["Output layer"]
+        Q[Overlay renderer\\nOpenCV draw]
+        R[Joint feedback hints\\nper-joint correction text]
+        S[Score HUD\\nlive pts + letter grade]
+      end
+
+      A -->|raw frames| C
+      B -->|reference sequences| F
+      B -->|reference embeddings| G
+      C --> D
+      D --> E
+      E -->|60-frame window| F
+      E -->|encode clip| G
+      F --> H
+      G --> H
+      H -->|yes| I
+      H -->|no match| R
+      I --> J
+      J --> K
+      K -->|diff le threshold| L
+      K -->|diff le 2x threshold| M
+      K -->|diff gt 2x threshold| N
+      L --> O
+      M --> O
+      N --> O
+      O --> P
+      P --> S
+      J --> R
+      D --> Q
+      R --> Q
+      S --> Q`;
+
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      fontFamily: "'Space Mono', monospace",
+      themeVariables: {
+        darkMode: true,
+        fontSize: '13px',
+        fontFamily: "'Space Mono', monospace",
+        primaryColor: '#1a1a2e',
+        primaryTextColor: '#a09cfc',
+        primaryBorderColor: '#7c6cfc',
+        secondaryColor: '#0f1a1a',
+        secondaryTextColor: '#6cfca8',
+        secondaryBorderColor: '#2a4a3a',
+        tertiaryColor: '#1a0f1a',
+        tertiaryTextColor: '#fc8c6c',
+        tertiaryBorderColor: '#4a2a1a',
+        lineColor: '#3a3a5a',
+        edgeLabelBackground: '#111118',
+        clusterBkg: '#0d0d18',
+        clusterBorder: '#2a2a4a',
+        titleColor: '#e2e2f0',
+        nodeTextColor: '#e2e2f0',
+      },
+      flowchart: { curve: 'basis', padding: 24 }
+    });
+
+    try {
+      const { svg } = await mermaid.render('arch-svg', diagram);
+      document.getElementById('diagram').innerHTML = svg;
+    } catch (e) {
+      document.getElementById('diagram').innerHTML =
+        `<div class="loading">Failed to render diagram: ${e.message}</div>`;
+    }
+  </script>
+</body>
+</html>
