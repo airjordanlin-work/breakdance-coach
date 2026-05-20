@@ -72,3 +72,40 @@ def test_engine_picks_closest_move(tmp_path):
     result = engine.compare(window)
     assert result is not None
     assert result.move_name == "close"
+
+def test_flatten_sequence_empty_raises():
+    with pytest.raises(ValueError):
+        flatten_sequence([])
+
+
+def test_dtw_different_length_sequences(tmp_path):
+    """DTW should handle sequences of different lengths."""
+    live = _synthetic_move(60)
+    ref  = _synthetic_move(45)
+    np.save(tmp_path / "move.npy", ref)
+    with (tmp_path / "move_meta.json").open("w") as f:
+        json.dump({"dtw_threshold": 1e6}, f)
+    library = load_reference_library(tmp_path)
+    result = compare_to_move(live, library[0])
+    assert result.distance >= 0
+
+
+def test_engine_empty_library(tmp_path):
+    engine = DTWEngine(tmp_path)
+    assert not engine.has_reference
+
+
+def test_engine_async_returns_future(tmp_path):
+    seq = _synthetic_move(60)
+    np.save(tmp_path / "windmill.npy", seq)
+    with (tmp_path / "windmill_meta.json").open("w") as f:
+        json.dump({"dtw_threshold": 1e6}, f)
+
+    from app.dtw_engine import DTWEngine, DTWResult
+    engine = DTWEngine(tmp_path, window_len=60)
+    window = [seq[i].reshape(33, 3) for i in range(60)]
+    future = engine.compare_async(window)
+    assert future is not None
+    result = future.result(timeout=5)
+    assert isinstance(result, DTWResult)
+    engine.shutdown()
