@@ -2,7 +2,7 @@
 
 A computer vision app that tracks your skeletal keypoints via webcam and gives you real-time feedback on breakdancing move accuracy. Built with MediaPipe, OpenCV, and Dynamic Time Warping.
 
-![Architecture](docs/architecture.html)
+[View Architecture Diagram](https://airjordanlin-work.github.io/breakdance-coach/architecture.html)
 
 ---
 
