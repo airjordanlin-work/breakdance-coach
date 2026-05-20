@@ -1,0 +1,9 @@
+{
+  "name": "windmill",
+  "dtw_threshold": 45.0,
+  "difficulty": "intermediate",
+  "keyframes": [
+  { "frame": 12, "label": "back freeze" },
+  { "frame": 28, "label": "shoulder pass" }
+  ]
+}
