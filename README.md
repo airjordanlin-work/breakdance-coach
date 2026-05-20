@@ -81,6 +81,7 @@ Python 3.10+ required.
 
 ```
 breakdance-coach/
+├── .github/workflows/ci.yml
 ├── app/
 │   ├── main.py              # entry point, webcam loop
 │   ├── pose_estimator.py    # MediaPipe wrapper + normalization
@@ -97,8 +98,9 @@ breakdance-coach/
 ├── tests/
 │   └── test_scorer.py
 ├── Dockerfile
-├── docker-compose.yml
-└── requirements.txt
+├── requirements.txt
+├── .env.example
+└── README.md
 ```
 
 ---

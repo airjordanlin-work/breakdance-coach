@@ -1,0 +1,6 @@
+mediapipe>=0.10.9
+opencv-python>=4.9.0
+numpy>=1.26.0
+fastdtw>=0.3.4
+scipy>=1.11.0
+pytest>=8.0.0
