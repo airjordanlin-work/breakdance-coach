@@ -18,43 +18,22 @@ from app import overlay
 from app.buffer import PoseBuffer, WINDOW_LEN
 from app.dtw_engine import DTWEngine
 from app.pose_estimator import PoseEstimator, is_pose_reliable
-from app.scorer import Scorer
+from app.scorer import Scorer, _load_keyframes, _reference_frame_index, _match_keyframe
 
 DTW_EVERY_N_FRAMES = 3
 KEYFRAME_FLASH_FRAMES = 30
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for source, reference library, and display options."""
     parser = argparse.ArgumentParser(description="Breakdance Coach — real-time move feedback")
-    parser.add_argument(
-        "--source",
-        default="webcam",
-        help='Webcam (default) or path to a video file (e.g. demo/sample.mp4)',
-    )
-    parser.add_argument(
-        "--reference-dir",
-        type=Path,
-        default=Path("reference_moves"),
-        help="Directory containing reference .npy sequences and metadata JSON",
-    )
-    parser.add_argument(
-        "--model-complexity",
-        type=int,
-        choices=[0, 1, 2],
-        default=0,
-        help="MediaPipe Pose model complexity (0=fast, 2=accurate)",
-    )
-    parser.add_argument(
-        "--window-name",
-        default="Breakdance Coach",
-        help="OpenCV display window title",
-    )
+    parser.add_argument("--source", default="webcam")
+    parser.add_argument("--reference-dir", type=Path, default=Path("reference_moves"))
+    parser.add_argument("--model-complexity", type=int, choices=[0, 1, 2], default=0)
+    parser.add_argument("--window-name", default="Breakdance Coach")
     return parser.parse_args()
 
 
 def open_capture(source: str) -> cv2.VideoCapture:
-    """Open webcam device 0 or a video file path."""
     if source == "webcam":
         return cv2.VideoCapture(0)
     if source.isdigit():
@@ -63,22 +42,19 @@ def open_capture(source: str) -> cv2.VideoCapture:
 
 
 def warn_if_no_references(reference_dir: Path) -> None:
-    """Print a warning when the reference move library is empty."""
     if not any(reference_dir.glob("*.npy")):
-        print(f"Warning: no reference moves found in {reference_dir} — DTW will not align.")
+        print(f"WARNING: no reference moves found in {reference_dir}")
 
 
 def print_session_summary(scorer: Scorer) -> None:
-    """Print final session totals to the terminal."""
     stats = scorer.stats()
-    print("Session complete")
+    print("\nSession complete")
     print(f"Final score: {stats.total_points:.0f}")
-    print(f"Grade: {stats.grade}")
+    print(f"Grade:       {stats.grade}")
     print(f"Perfect: {stats.perfects} / Close: {stats.closes} / Miss: {stats.misses}")
 
 
 def run_loop(args: argparse.Namespace) -> None:
-    """Main render loop: capture → pose → buffer → DTW → score → overlay → display."""
     reference_dir = Path(args.reference_dir)
     warn_if_no_references(reference_dir)
 
@@ -90,10 +66,12 @@ def run_loop(args: argparse.Namespace) -> None:
         raise SystemExit(f"Could not open video source: {args.source}")
 
     estimator = PoseEstimator(model_complexity=args.model_complexity)
-    estimator.process(dummy)  # warmup before live frames
+    estimator.process(dummy)
     print("Ready — press Q to quit")
 
     engine = DTWEngine(reference_dir)
+    print(f"Reference library loaded: {len(engine.library)} move(s)")
+
     scorer = Scorer(reference_dir)
     buf = PoseBuffer()
 
@@ -117,22 +95,41 @@ def run_loop(args: argparse.Namespace) -> None:
                 pose_frame = pose
                 buf.add(pose)
 
-            if buf.is_ready() and frame_idx % DTW_EVERY_N_FRAMES == 0 and future is None:
+            # debug every 30 frames so terminal doesn't flood
+            if frame_idx % 30 == 0:
+                print(f"[frame {frame_idx}] buffer: {len(buf)}/60 | has_ref: {engine.has_reference} | future pending: {future is not None}")
+
+            # fire DTW as soon as buffer is ready
+            if buf.is_ready() and future is None:
                 window = [f.landmarks for f in buf._frames]
                 future = engine.compare_async(window)
+                print(f"DTW fired on frame {frame_idx}")
 
             if future is not None and future.done():
                 try:
                     dtw_result = future.result()
-                except Exception:
+                except Exception as e:
+                    print(f"DTW error: {e}")
                     dtw_result = None
                 future = None
 
-                if dtw_result is not None and dtw_result.aligned and pose_frame is not None:
-                    new_score = scorer.score(dtw_result, pose_frame)
-                    if new_score is not None:
-                        score_result = new_score
-                        flash_counter = KEYFRAME_FLASH_FRAMES
+                if dtw_result is not None:
+                    print(f"DTW distance: {dtw_result.distance:.2f} | threshold: {dtw_result.threshold:.2f} | aligned: {dtw_result.aligned}")
+
+                    if dtw_result.aligned and pose_frame is not None:
+                        new_score = scorer.score(dtw_result, pose_frame)
+                        print(f"Score result: {new_score}")
+                        if new_score is not None:
+                            score_result = new_score
+                            flash_counter = KEYFRAME_FLASH_FRAMES
+                        else:
+                            kf = _load_keyframes(scorer.reference_dir, dtw_result.move_name)
+                            print(f"Keyframes loaded: {len(kf)}")
+                            live_idx = max(dtw_result.live_frames - 1, 0)
+                            ref_idx = _reference_frame_index(dtw_result, live_idx)
+                            print(f"Live index: {live_idx} | Ref index: {ref_idx}")
+                            matched = _match_keyframe(kf, ref_idx)
+                            print(f"Matched keyframe: {matched}")
 
             fill_ratio = len(buf) / WINDOW_LEN
             move_name = dtw_result.move_name if dtw_result else engine.move_name
@@ -163,7 +160,6 @@ def run_loop(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    """Program entry: parse args and run the live coaching loop."""
     args = parse_args()
     run_loop(args)
 
