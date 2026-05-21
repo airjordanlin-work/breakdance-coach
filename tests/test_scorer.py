@@ -228,7 +228,7 @@ def test_score_miss_resets_streak(tmp_path: Path) -> None:
     assert scorer.misses == 1
 
 
-def test_score_combo_on_second_perfect(tmp_path: Path) -> None:
+def test_score_combo_on_third_perfect(tmp_path: Path) -> None:
     _make_meta(tmp_path, target_angle=90.0, threshold=5.0)
     scorer = Scorer(tmp_path)
     dtw = _make_dtw_result()
@@ -236,9 +236,11 @@ def test_score_combo_on_second_perfect(tmp_path: Path) -> None:
 
     r1 = scorer.score(dtw, pose)
     r2 = scorer.score(dtw, pose)
+    r3 = scorer.score(dtw, pose)
 
-    assert r1 is not None and r2 is not None
+    assert r1 is not None and r2 is not None and r3 is not None
     assert r1.points_this_attempt == pytest.approx(100.0)
-    assert r2.points_this_attempt == pytest.approx(150.0)  # 100 * 1.5 combo
-    assert r2.combo_multiplier_applied == pytest.approx(1.5)
-    assert scorer.streak == 2
+    assert r2.points_this_attempt == pytest.approx(100.0)  # streak 2 → still 1x
+    assert r3.points_this_attempt == pytest.approx(150.0)  # streak 3 → 1.5x
+    assert r3.combo_multiplier_applied == pytest.approx(1.5)
+    assert scorer.streak == 3

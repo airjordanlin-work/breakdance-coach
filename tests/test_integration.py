@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from pathlib import Path
 
-from app.pose_estimator import PoseFrame, is_pose_reliable
+from app.pose_estimator import PoseFrame
 from app.buffer import PoseBuffer
 from app.dtw_engine import DTWEngine, DTWResult
 from app.scorer import Scorer, SessionStats
@@ -55,6 +55,22 @@ def make_scorable_pose() -> PoseFrame:
     landmarks[15] = [0.0, 1.0, 0.0]
     visibility = np.ones(33, dtype=np.float32)
     return PoseFrame(landmarks=landmarks, visibility=visibility)
+
+
+def _with_keyframe_path(dtw_result: DTWResult, ref_frame: int = 5) -> DTWResult:
+    """Inject warping path so live tail frame maps to a keyframe."""
+    live_idx = dtw_result.live_frames - 1
+    return DTWResult(
+        aligned=dtw_result.aligned,
+        distance=dtw_result.distance,
+        normalized_distance=dtw_result.normalized_distance,
+        move_name=dtw_result.move_name,
+        threshold=dtw_result.threshold,
+        live_frames=dtw_result.live_frames,
+        reference_frames=dtw_result.reference_frames,
+        live_path=tuple([live_idx] * 12),
+        reference_path=tuple([ref_frame] * 12),
+    )
 
 
 def test_buffer_accepts_reliable_frames() -> None:
@@ -111,23 +127,9 @@ def test_full_pipeline_scores_when_keyframe_matches(tmp_path: Path) -> None:
         buf.add(make_reliable_frame(seed=i))
 
     window = [f.landmarks for f in list(buf._frames)]
-    dtw_result = engine.compare(window)
+    dtw_result = _with_keyframe_path(engine.compare(window))
     assert dtw_result is not None
     assert dtw_result.aligned is True
-
-    # Ensure warping path maps live tail frame → keyframe frame 5
-    live_idx = dtw_result.live_frames - 1
-    dtw_result = DTWResult(
-        aligned=dtw_result.aligned,
-        distance=dtw_result.distance,
-        normalized_distance=dtw_result.normalized_distance,
-        move_name=dtw_result.move_name,
-        threshold=dtw_result.threshold,
-        live_frames=dtw_result.live_frames,
-        reference_frames=dtw_result.reference_frames,
-        live_path=tuple([live_idx] * 12),
-        reference_path=tuple([5] * 12),
-    )
 
     score_result = scorer.score(dtw_result, make_scorable_pose())
     assert score_result is not None
@@ -146,28 +148,15 @@ def test_combo_builds_on_perfect_streak(tmp_path: Path) -> None:
         for i in range(10):
             buf.add(make_reliable_frame(seed=i))
         window = [f.landmarks for f in list(buf._frames)]
-        dtw_result = engine.compare(window)
+        dtw_result = _with_keyframe_path(engine.compare(window))
         assert dtw_result is not None
-
-        live_idx = dtw_result.live_frames - 1
-        dtw_result = DTWResult(
-            aligned=dtw_result.aligned,
-            distance=dtw_result.distance,
-            normalized_distance=dtw_result.normalized_distance,
-            move_name=dtw_result.move_name,
-            threshold=dtw_result.threshold,
-            live_frames=dtw_result.live_frames,
-            reference_frames=dtw_result.reference_frames,
-            live_path=tuple([live_idx] * 12),
-            reference_path=tuple([5] * 12),
-        )
         scorer.score(dtw_result, make_scorable_pose())
 
     stats = scorer.stats()
     assert stats.total_attempts == 3
     assert stats.perfects == 3
     assert stats.streak == 3
-    assert stats.total_points == pytest.approx(350.0)  # 100 + 150 + 100
+    assert stats.total_points == pytest.approx(350.0)  # 100 + 100 + 150
     engine.shutdown()
 
 
