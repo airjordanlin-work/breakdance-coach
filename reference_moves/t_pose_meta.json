@@ -1,27 +1,19 @@
 {
   "name": "t_pose",
-  "dtw_threshold": 300.0,
+  "dtw_threshold": 2000.0,
   "keyframes": [
     {
-      "frame": 30,
+      "frame": 59,
       "joints": [
         {
           "joint_name": "left_elbow",
-          "joint_triplet": [
-            11,
-            13,
-            15
-          ],
+          "joint_triplet": [11, 13, 15],
           "target_angle": 170.0,
           "threshold": 15.0
         },
         {
           "joint_name": "right_elbow",
-          "joint_triplet": [
-            12,
-            14,
-            16
-          ],
+          "joint_triplet": [12, 14, 16],
           "target_angle": 170.0,
           "threshold": 15.0
         }
