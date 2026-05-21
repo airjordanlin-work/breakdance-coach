@@ -12,7 +12,7 @@ WINDOW_LEN = 60
 
 
 class PoseBuffer:
-    """Fixed-size deque of PoseFrame objects for sequence comparison."""
+    """Fixed-size deque of :class:`PoseFrame` objects for sequence comparison."""
 
     def __init__(self, maxlen: int = WINDOW_LEN) -> None:
         self._maxlen = maxlen
@@ -22,18 +22,25 @@ class PoseBuffer:
         return len(self._frames)
 
     def add(self, frame: PoseFrame) -> bool:
-        """Append a frame if reliable; silently skip otherwise."""
+        """Append a frame if reliable; silently skip otherwise.
+
+        Returns True if the frame was stored, False if skipped.
+        """
         if not is_pose_reliable(frame):
             return False
         self._frames.append(frame)
         return True
 
     def is_ready(self) -> bool:
-        """True when the buffer holds exactly maxlen reliable frames."""
+        """True when the buffer holds exactly ``maxlen`` reliable frames."""
         return len(self._frames) == self._maxlen
 
     def get_sequence(self) -> np.ndarray:
-        """Stack normalized landmarks as (60, 33, 3) for the DTW engine."""
+        """Stack normalized landmarks as (60, 33, 3) for the DTW engine.
+
+        Raises:
+            ValueError: If the buffer is not full yet.
+        """
         if not self.is_ready():
             raise ValueError(
                 f"Buffer not ready: {len(self._frames)}/{self._maxlen} frames"
@@ -41,10 +48,10 @@ class PoseBuffer:
         return np.stack([f.landmarks for f in self._frames], axis=0).astype(np.float32)
 
     def clear(self) -> None:
-        """Reset the buffer between moves."""
+        """Reset the buffer (e.g. between moves)."""
         self._frames.clear()
 
     @property
     def fill_ratio(self) -> float:
-        """How full the buffer is, 0.0 to 1.0."""
+        """How full the buffer is, from 0.0 to 1.0."""
         return len(self._frames) / self._maxlen

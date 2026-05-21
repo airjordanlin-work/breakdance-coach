@@ -153,6 +153,7 @@ def run_loop(args: argparse.Namespace) -> None:
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
+
     finally:
         cap.release()
         cv2.destroyAllWindows()
