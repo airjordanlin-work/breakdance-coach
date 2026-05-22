@@ -9,7 +9,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-# Allow `python app/main.py` from repo root
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -19,6 +18,7 @@ from app.buffer import PoseBuffer, WINDOW_LEN
 from app.dtw_engine import DTWEngine
 from app.pose_estimator import PoseEstimator, is_pose_reliable
 from app.scorer import Scorer, _load_keyframes, _reference_frame_index, _match_keyframe
+from app.voice import VoiceCoach
 
 DTW_EVERY_N_FRAMES = 3
 KEYFRAME_FLASH_FRAMES = 30
@@ -30,6 +30,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference-dir", type=Path, default=Path("reference_moves"))
     parser.add_argument("--model-complexity", type=int, choices=[0, 1, 2], default=0)
     parser.add_argument("--window-name", default="Breakdance Coach")
+    parser.add_argument(
+        "--zoom", type=float, default=1.0,
+        help="Digital zoom factor. <1.0 zooms out (shows more). Try 0.7"
+    )
+    parser.add_argument(
+        "--no-voice", action="store_true",
+        help="Disable voice coaching feedback"
+    )
+    parser.add_argument(
+        "--voice-gender", default="female", choices=["female", "male"],
+        help="Voice coach gender: female=Bella (default) or male=Michael"
+    )
     return parser.parse_args()
 
 
@@ -54,6 +66,27 @@ def print_session_summary(scorer: Scorer) -> None:
     print(f"Perfect: {stats.perfects} / Close: {stats.closes} / Miss: {stats.misses}")
 
 
+def apply_zoom(frame: np.ndarray, zoom: float) -> np.ndarray:
+    """Digital zoom. <1.0 zooms out by adding black borders. >1.0 zooms in by cropping."""
+    if zoom == 1.0:
+        return frame
+    h, w = frame.shape[:2]
+    if zoom < 1.0:
+        new_h = int(h / zoom)
+        new_w = int(w / zoom)
+        canvas = np.zeros((new_h, new_w, 3), dtype=np.uint8)
+        y_off = (new_h - h) // 2
+        x_off = (new_w - w) // 2
+        canvas[y_off:y_off + h, x_off:x_off + w] = frame
+        return cv2.resize(canvas, (w, h))
+    else:
+        cy, cx = h // 2, w // 2
+        half_h = max(1, min(int((h / zoom) / 2), cy))
+        half_w = max(1, min(int((w / zoom) / 2), cx))
+        cropped = frame[cy - half_h:cy + half_h, cx - half_w:cx + half_w]
+        return cv2.resize(cropped, (w, h))
+
+
 def run_loop(args: argparse.Namespace) -> None:
     reference_dir = Path(args.reference_dir)
     warn_if_no_references(reference_dir)
@@ -67,20 +100,27 @@ def run_loop(args: argparse.Namespace) -> None:
 
     estimator = PoseEstimator(model_complexity=args.model_complexity)
     estimator.process(dummy)
-    print("Ready — press Q to quit")
+    print("Ready — press Q to quit | + zoom out | - zoom in | V toggle voice gender")
 
     engine = DTWEngine(reference_dir)
     print(f"Reference library loaded: {len(engine.library)} move(s)")
 
     scorer = Scorer(reference_dir)
-    buf = PoseBuffer()
+    buf    = PoseBuffer()
+    voice  = VoiceCoach(gender=args.voice_gender) if not args.no_voice else None
+    if voice:
+        voice.speak("Voice coach ready")
 
-    future = None
-    flash_counter = 0
-    score_result = None
-    dtw_result = None
-    frame_idx = 0
-    pose_frame = None
+    current_gender    = args.voice_gender
+    future            = None
+    flash_counter     = 0
+    score_result      = None
+    dtw_result        = None
+    frame_idx         = 0
+    pose_frame        = None
+    was_aligned       = False
+    buf_was_ready     = False
+    no_body_voiced_at = -999
 
     try:
         while True:
@@ -88,18 +128,30 @@ def run_loop(args: argparse.Namespace) -> None:
             if not ok:
                 break
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = apply_zoom(frame, args.zoom)
+            frame = cv2.flip(frame, 1)
+
+            rgb  = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pose = estimator.process(rgb, keep_raw=True)
 
-            if pose is not None and is_pose_reliable(pose):
+            body_visible = pose is not None and is_pose_reliable(pose)
+
+            if body_visible:
                 pose_frame = pose
                 buf.add(pose)
+            else:
+                if voice and frame_idx - no_body_voiced_at > 150:
+                    voice.feedback_no_body()
+                    no_body_voiced_at = frame_idx
 
-            # debug every 30 frames so terminal doesn't flood
+            if buf.is_ready() and not buf_was_ready:
+                buf_was_ready = True
+                if voice:
+                    voice.feedback_buffer_ready()
+
             if frame_idx % 30 == 0:
-                print(f"[frame {frame_idx}] buffer: {len(buf)}/60 | has_ref: {engine.has_reference} | future pending: {future is not None}")
+                print(f"[frame {frame_idx}] buffer: {len(buf)}/60 | has_ref: {engine.has_reference} | future: {future is not None} | zoom: {args.zoom:.1f}")
 
-            # fire DTW as soon as buffer is ready
             if buf.is_ready() and future is None:
                 window = [f.landmarks for f in buf._frames]
                 future = engine.compare_async(window)
@@ -116,23 +168,28 @@ def run_loop(args: argparse.Namespace) -> None:
                 if dtw_result is not None:
                     print(f"DTW distance: {dtw_result.distance:.2f} | threshold: {dtw_result.threshold:.2f} | aligned: {dtw_result.aligned}")
 
+                    if dtw_result.aligned and not was_aligned:
+                        if voice:
+                            voice.feedback_aligned()
+                    was_aligned = dtw_result.aligned
+
                     if dtw_result.aligned and pose_frame is not None:
                         new_score = scorer.score(dtw_result, pose_frame)
                         print(f"Score result: {new_score}")
                         if new_score is not None:
-                            score_result = new_score
+                            score_result  = new_score
                             flash_counter = KEYFRAME_FLASH_FRAMES
+                            if voice:
+                                voice.feedback_from_score(new_score)
                         else:
-                            kf = _load_keyframes(scorer.reference_dir, dtw_result.move_name)
-                            print(f"Keyframes loaded: {len(kf)}")
+                            kf       = _load_keyframes(scorer.reference_dir, dtw_result.move_name)
                             live_idx = max(dtw_result.live_frames - 1, 0)
-                            ref_idx = _reference_frame_index(dtw_result, live_idx)
-                            print(f"Live index: {live_idx} | Ref index: {ref_idx}")
-                            matched = _match_keyframe(kf, ref_idx)
-                            print(f"Matched keyframe: {matched}")
+                            ref_idx  = _reference_frame_index(dtw_result, live_idx)
+                            matched  = _match_keyframe(kf, ref_idx)
+                            print(f"Keyframes loaded: {len(kf)} | Live: {live_idx} | Ref: {ref_idx} | Matched: {matched}")
 
             fill_ratio = len(buf) / WINDOW_LEN
-            move_name = dtw_result.move_name if dtw_result else engine.move_name
+            move_name  = dtw_result.move_name if dtw_result else engine.move_name
 
             frame, flash_counter = overlay.render(
                 frame,
@@ -143,13 +200,25 @@ def run_loop(args: argparse.Namespace) -> None:
                 fill_ratio=fill_ratio,
                 flash_counter=flash_counter,
                 move_name=move_name,
+                buf_len=len(buf),
             )
 
             cv2.imshow(args.window_name, frame)
             frame_idx += 1
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            elif key == ord("=") or key == ord("+"):
+                args.zoom = max(0.3, args.zoom - 0.1)
+                print(f"Zoom: {args.zoom:.1f}")
+            elif key == ord("-"):
+                args.zoom = min(2.0, args.zoom + 0.1)
+                print(f"Zoom: {args.zoom:.1f}")
+            elif key == ord("v"):
+                if voice:
+                    current_gender = "male" if current_gender == "female" else "female"
+                    voice.set_gender(current_gender)
 
     finally:
         cap.release()

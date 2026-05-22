@@ -1,0 +1,169 @@
+"""Voice coaching module — async TTS using Kokoro ONNX (local, free, no API)."""
+
+from __future__ import annotations
+
+import random
+import subprocess
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+from app.scorer import ScoreResult, PERFECT, MISS, CLOSE
+
+# Model files — stored in project root
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MODEL_PATH    = _PROJECT_ROOT / "kokoro-v1.0.onnx"
+VOICES_PATH   = _PROJECT_ROOT / "voices-v1.0.bin"
+
+VOICE_MAP = {
+    "female": "af_bella",
+    "male":   "am_michael",
+}
+
+PERFECT_PHRASES = [
+    "Yeah, that's it! Perfect form",
+    "Nailed it, great position",
+    "Perfect, keep that up",
+    "That's the one, hold it",
+]
+
+CLOSE_PHRASES = [
+    "Almost there, just open up your {joint} a little more",
+    "Getting closer, adjust your {joint} slightly",
+    "Nearly perfect, tweak that {joint}",
+]
+
+EXTEND_PHRASES = [
+    "Straighten your {joint} out more",
+    "Open up that {joint}",
+    "Get that {joint} fully extended",
+]
+
+BEND_PHRASES = [
+    "Bring your {joint} in a bit",
+    "Bend that {joint} more",
+    "Tuck your {joint} in",
+]
+
+NO_BODY_PHRASES = [
+    "Hey, step back so I can see your full body",
+    "Step back a bit, I need to see your hips and shoulders",
+    "Move back so your full body is in frame",
+]
+
+
+class VoiceCoach:
+    """Async voice coach using Kokoro TTS — runs fully local, no API required."""
+
+    def __init__(self, cooldown: float = 4.0, gender: str = "female") -> None:
+        self._cooldown        = cooldown
+        self._gender          = gender
+        self._last_spoken: float = 0.0
+        self._thread: threading.Thread | None = None
+        self._lock            = threading.Lock()
+        self._kokoro          = None
+        self._available       = False
+
+        try:
+            from kokoro_onnx import Kokoro
+            if not MODEL_PATH.exists():
+                print(f"VoiceCoach: model not found at {MODEL_PATH}")
+                print("  Run: curl -L -o kokoro-v1.0.onnx https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx")
+                return
+            if not VOICES_PATH.exists():
+                print(f"VoiceCoach: voices not found at {VOICES_PATH}")
+                print("  Run: curl -L -o voices-v1.0.bin https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin")
+                return
+
+            self._kokoro    = Kokoro(str(MODEL_PATH), str(VOICES_PATH))
+            self._available = True
+            print(f"VoiceCoach: ready — {gender} voice ({VOICE_MAP[gender]})")
+
+        except ImportError:
+            print("VoiceCoach: kokoro-onnx not installed — run: pip install kokoro-onnx soundfile")
+        except Exception as e:
+            print(f"VoiceCoach: failed to load — {e}")
+
+    def set_gender(self, gender: str) -> None:
+        """Switch between female (Bella) and male (Michael) at runtime."""
+        if gender not in VOICE_MAP:
+            print(f"VoiceCoach: unknown gender '{gender}' — use 'female' or 'male'")
+            return
+        self._gender = gender
+        print(f"VoiceCoach: switched to {gender} ({VOICE_MAP[gender]})")
+
+    def _speak_async(self, text: str) -> None:
+        """Generate and play audio on a daemon thread — never blocks render loop."""
+        kokoro = self._kokoro
+        voice  = VOICE_MAP[self._gender]
+
+        def run() -> None:
+            try:
+                import soundfile as sf
+                samples, sample_rate = kokoro.create(text, voice=voice, speed=1.0)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as f:
+                    sf.write(f.name, samples, sample_rate)
+                    subprocess.run(["afplay", f.name], timeout=10)
+            except Exception as e:
+                print(f"VoiceCoach error: {e}")
+
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return  # don't stack — skip if already speaking
+            self._thread = threading.Thread(target=run, daemon=True)
+            self._thread.start()
+
+    def _can_speak(self) -> bool:
+        if not self._available:
+            return False
+        now = time.time()
+        if now - self._last_spoken < self._cooldown:
+            return False
+        self._last_spoken = now
+        return True
+
+    def speak(self, text: str) -> None:
+        """Speak arbitrary text if cooldown has elapsed."""
+        if not self._can_speak():
+            return
+        print(f"VoiceCoach: '{text}'")
+        self._speak_async(text)
+
+    def feedback_from_score(self, score_result: ScoreResult) -> None:
+        """Speak joint-specific feedback based on the latest ScoreResult."""
+        if not self._can_speak() or score_result is None:
+            return
+
+        misses   = [r for r in score_result.results if r.tier == MISS]
+        closes   = [r for r in score_result.results if r.tier == CLOSE]
+        perfects = [r for r in score_result.results if r.tier == PERFECT]
+
+        if not misses and not closes and perfects:
+            self._speak_async(random.choice(PERFECT_PHRASES))
+        elif not misses and closes:
+            joint = closes[0].joint_name.replace("_", " ")
+            self._speak_async(random.choice(CLOSE_PHRASES).format(joint=joint))
+        elif misses:
+            joint  = misses[0].joint_name.replace("_", " ")
+            actual = misses[0].actual_angle
+            target = misses[0].target_angle
+            if actual < target:
+                self._speak_async(random.choice(EXTEND_PHRASES).format(joint=joint))
+            else:
+                self._speak_async(random.choice(BEND_PHRASES).format(joint=joint))
+
+    def feedback_no_body(self) -> None:
+        if not self._can_speak():
+            return
+        self._speak_async(random.choice(NO_BODY_PHRASES))
+
+    def feedback_aligned(self) -> None:
+        if not self._can_speak():
+            return
+        self._speak_async("Nice, hold that")
+
+    def feedback_buffer_ready(self) -> None:
+        if not self._can_speak():
+            return
+        self._speak_async("Okay, go ahead")
