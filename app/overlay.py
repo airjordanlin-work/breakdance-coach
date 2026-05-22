@@ -8,22 +8,17 @@ import cv2
 import numpy as np
 
 from app.dtw_engine import DTWResult
-from app.pose_estimator import PoseFrame
+from app.pose_estimator import PoseFrame, is_pose_reliable
 from app.scorer import CLOSE, MISS, PERFECT, ScoreResult, SessionStats
 
 BODY_CONNECTIONS: list[tuple[int, int]] = [
     (11, 12),
-    (11, 13),
-    (13, 15),
-    (12, 14),
-    (14, 16),
-    (11, 23),
-    (12, 24),
+    (11, 13), (13, 15),
+    (12, 14), (14, 16),
+    (11, 23), (12, 24),
     (23, 24),
-    (23, 25),
-    (25, 27),
-    (24, 26),
-    (26, 28),
+    (23, 25), (25, 27),
+    (24, 26), (26, 28),
 ]
 
 KEYFRAME_FLASH_FRAMES = 30
@@ -64,7 +59,6 @@ def _landmark_pixel(x: float, y: float, frame_w: int, frame_h: int) -> tuple[int
 
 
 def _visibility_point_color(visibility: float) -> tuple[int, int, int]:
-    """Circle color from a single landmark visibility score."""
     if visibility >= 0.7:
         return COLOR_GREEN
     if visibility >= 0.4:
@@ -73,7 +67,6 @@ def _visibility_point_color(visibility: float) -> tuple[int, int, int]:
 
 
 def _visibility_line_color(visibility_a: float, visibility_b: float) -> tuple[int, int, int]:
-    """Line color from average visibility of two endpoints."""
     avg = (visibility_a + visibility_b) / 2.0
     if avg >= 0.7:
         return COLOR_WHITE
@@ -152,25 +145,68 @@ def draw_bounding_box(
         label = "MATCHING..."
 
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, lineType=cv2.LINE_AA)
-    cv2.putText(
-        frame,
-        label,
-        (x1 + 4, max(y1 - 8, 18)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        color,
-        2,
-        cv2.LINE_AA,
-    )
+    cv2.putText(frame, label, (x1 + 4, max(y1 - 8, 18)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+    return frame
+
+
+def draw_body_warning(
+    frame: np.ndarray,
+    pose_frame: Optional[PoseFrame],
+    buf_len: int,
+) -> np.ndarray:
+    """Show a warning panel when full body is not detected or buffer is filling."""
+    h, w = frame.shape[:2]
+
+    # full body not visible
+    if pose_frame is None or not is_pose_reliable(pose_frame):
+        panel_w, panel_h = 480, 80
+        x1 = (w - panel_w) // 2
+        y1 = (h - panel_h) // 2
+        x2, y2 = x1 + panel_w, y1 + panel_h
+
+        bg = frame.copy()
+        cv2.rectangle(bg, (x1, y1), (x2, y2), (0, 0, 160), -1)
+        cv2.addWeighted(bg, 0.75, frame, 0.25, 0, frame)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), COLOR_RED, 2, cv2.LINE_AA)
+
+        cv2.putText(frame, "FULL BODY REQUIRED",
+                    (x1 + 16, y1 + 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, COLOR_RED, 2, cv2.LINE_AA)
+        cv2.putText(frame, "Step back so hips and shoulders are visible",
+                    (x1 + 16, y1 + 58), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, COLOR_WHITE, 1, cv2.LINE_AA)
+        return frame
+
+    # body visible but buffer still filling
+    if buf_len < 60:
+        panel_w, panel_h = 380, 60
+        x1 = (w - panel_w) // 2
+        y1 = h - 100
+        x2, y2 = x1 + panel_w, y1 + panel_h
+
+        bg = frame.copy()
+        cv2.rectangle(bg, (x1, y1), (x2, y2), (0, 100, 100), -1)
+        cv2.addWeighted(bg, 0.70, frame, 0.30, 0, frame)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), COLOR_YELLOW, 1, cv2.LINE_AA)
+
+        cv2.putText(frame, "MOVE INTO POSITION",
+                    (x1 + 12, y1 + 24), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65, COLOR_YELLOW, 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Filling buffer... {buf_len}/60",
+                    (x1 + 12, y1 + 48), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, COLOR_WHITE, 1, cv2.LINE_AA)
+        return frame
+
     return frame
 
 
 def draw_score_hud(frame: np.ndarray, stats: SessionStats) -> np.ndarray:
     """Draw top-left session stats panel with semi-transparent background."""
     panel_w, panel_h = 280, 150
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (10, 10), (10 + panel_w, 10 + panel_h), COLOR_PANEL_BG, -1)
-    cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, frame)
+    bg = frame.copy()
+    cv2.rectangle(bg, (10, 10), (10 + panel_w, 10 + panel_h), COLOR_PANEL_BG, -1)
+    cv2.addWeighted(bg, 0.72, frame, 0.28, 0, frame)
 
     grade_color = GRADE_COLORS.get(stats.grade, COLOR_WHITE)
     lines: list[tuple[str, tuple[int, int, int]]] = [
@@ -182,48 +218,29 @@ def draw_score_hud(frame: np.ndarray, stats: SessionStats) -> np.ndarray:
 
     y = 34
     for text, color in lines:
-        cv2.putText(
-            frame,
-            text,
-            (20, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
+        cv2.putText(frame, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, color, 1, cv2.LINE_AA)
         y += 28
 
     return frame
 
 
 def draw_buffer_bar(frame: np.ndarray, fill_ratio: float) -> np.ndarray:
-    """Draw bottom buffer progress bar; green fill scales with ``fill_ratio``."""
+    """Draw bottom buffer progress bar."""
     h, w = frame.shape[:2]
     ratio = float(np.clip(fill_ratio, 0.0, 1.0))
-
-    bar_h = 14
-    margin = 12
+    bar_h, margin = 14, 12
     x1, y1 = margin, h - margin - bar_h
     x2, y2 = w - margin, h - margin
 
     cv2.rectangle(frame, (x1, y1), (x2, y2), COLOR_DARK_GREY, -1)
-
     fill_x2 = x1 + int((x2 - x1) * ratio)
     if fill_x2 > x1:
         cv2.rectangle(frame, (x1, y1), (fill_x2, y2), COLOR_GREEN, -1)
 
     label = "READY" if ratio >= 1.0 else "BUFFERING..."
-    cv2.putText(
-        frame,
-        label,
-        (x1 + 6, y1 - 6),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        COLOR_WHITE,
-        1,
-        cv2.LINE_AA,
-    )
+    cv2.putText(frame, label, (x1 + 6, y1 - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_WHITE, 1, cv2.LINE_AA)
     return frame
 
 
@@ -232,7 +249,7 @@ def draw_keyframe_flash(
     score_result: Optional[ScoreResult],
     flash_counter: int,
 ) -> tuple[np.ndarray, int]:
-    """Flash per-joint keyframe results for up to 30 frames; return updated counter."""
+    """Flash per-joint keyframe results for up to 30 frames."""
     if flash_counter <= 0:
         return frame, 0
     if score_result is None:
@@ -244,35 +261,20 @@ def draw_keyframe_flash(
     x1, y1 = w - panel_w - 20, 80
     x2, y2 = x1 + panel_w, y1 + panel_h
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x1, y1), (x2, y2), COLOR_PANEL_BG, -1)
-    cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+    bg = frame.copy()
+    cv2.rectangle(bg, (x1, y1), (x2, y2), COLOR_PANEL_BG, -1)
+    cv2.addWeighted(bg, 0.75, frame, 0.25, 0, frame)
 
-    cv2.putText(
-        frame,
-        f"KEYFRAME +{score_result.points_this_attempt:.0f}",
-        (x1 + 8, y1 + 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        COLOR_WHITE,
-        1,
-        cv2.LINE_AA,
-    )
+    cv2.putText(frame, f"KEYFRAME +{score_result.points_this_attempt:.0f}",
+                (x1 + 8, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, COLOR_WHITE, 1, cv2.LINE_AA)
 
     y = y1 + 44
     for joint in score_result.results:
         color = TIER_COLORS.get(joint.tier, COLOR_WHITE)
         text = f"{joint.joint_name}: {joint.tier} ({joint.diff:.0f}°)"
-        cv2.putText(
-            frame,
-            text,
-            (x1 + 8, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
+        cv2.putText(frame, text, (x1 + 8, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
         y += 22
 
     return frame, max(flash_counter - 1, 0)
@@ -289,20 +291,11 @@ def draw_move_label(frame: np.ndarray, move_name: Optional[str]) -> np.ndarray:
     x = w - tw - 16
     y = h - 36
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x - 8, y - th - 10), (x + tw + 8, y + 8), COLOR_PANEL_BG, -1)
-    cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
-
-    cv2.putText(
-        frame,
-        text,
-        (x, y),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
-        COLOR_WHITE,
-        2,
-        cv2.LINE_AA,
-    )
+    bg = frame.copy()
+    cv2.rectangle(bg, (x - 8, y - th - 10), (x + tw + 8, y + 8), COLOR_PANEL_BG, -1)
+    cv2.addWeighted(bg, 0.7, frame, 0.3, 0, frame)
+    cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                0.6, COLOR_WHITE, 2, cv2.LINE_AA)
     return frame
 
 
@@ -316,6 +309,7 @@ def render(
     fill_ratio: float = 0.0,
     flash_counter: int = 0,
     move_name: Optional[str] = None,
+    buf_len: int = 0,
 ) -> tuple[np.ndarray, int]:
     """Apply all overlay layers in draw order; return frame and updated flash counter."""
     out = frame
@@ -323,6 +317,9 @@ def render(
     if pose_frame is not None:
         out = draw_skeleton(out, pose_frame)
         out = draw_bounding_box(out, pose_frame, dtw_result)
+
+    # body warning — shown when full body not visible or buffer filling
+    out = draw_body_warning(out, pose_frame, buf_len)
 
     if stats is not None:
         out = draw_score_hud(out, stats)
