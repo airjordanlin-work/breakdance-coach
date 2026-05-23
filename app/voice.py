@@ -11,7 +11,6 @@ from pathlib import Path
 
 from app.scorer import ScoreResult, PERFECT, MISS, CLOSE
 
-# Model files — stored in project root
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH    = _PROJECT_ROOT / "kokoro-v1.0.onnx"
 VOICES_PATH   = _PROJECT_ROOT / "voices-v1.0.bin"
@@ -57,13 +56,14 @@ class VoiceCoach:
     """Async voice coach using Kokoro TTS — runs fully local, no API required."""
 
     def __init__(self, cooldown: float = 4.0, gender: str = "female") -> None:
-        self._cooldown        = cooldown
-        self._gender          = gender
+        self._cooldown           = cooldown
+        self._gender             = gender
         self._last_spoken: float = 0.0
         self._thread: threading.Thread | None = None
-        self._lock            = threading.Lock()
-        self._kokoro          = None
-        self._available       = False
+        self._lock               = threading.Lock()
+        self._kokoro             = None
+        self._available          = False
+        self._recent: list[str]  = []   # tracks recently used phrases to avoid repetition
 
         try:
             from kokoro_onnx import Kokoro
@@ -84,6 +84,20 @@ class VoiceCoach:
             print("VoiceCoach: kokoro-onnx not installed — run: pip install kokoro-onnx soundfile")
         except Exception as e:
             print(f"VoiceCoach: failed to load — {e}")
+
+    def _pick(self, phrases: list[str]) -> str:
+        """Pick a phrase not recently used to avoid repetition."""
+        available = [p for p in phrases if p not in self._recent]
+        if not available:
+            # all phrases used — reset and pick from full list
+            available = phrases
+            self._recent = []
+        choice = random.choice(available)
+        self._recent.append(choice)
+        # keep recent list to last 3 entries
+        if len(self._recent) > 3:
+            self._recent.pop(0)
+        return choice
 
     def set_gender(self, gender: str) -> None:
         """Switch between female (Bella) and male (Michael) at runtime."""
@@ -110,7 +124,7 @@ class VoiceCoach:
 
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
-                return  # don't stack — skip if already speaking
+                return
             self._thread = threading.Thread(target=run, daemon=True)
             self._thread.start()
 
@@ -140,23 +154,23 @@ class VoiceCoach:
         perfects = [r for r in score_result.results if r.tier == PERFECT]
 
         if not misses and not closes and perfects:
-            self._speak_async(random.choice(PERFECT_PHRASES))
+            self._speak_async(self._pick(PERFECT_PHRASES))
         elif not misses and closes:
             joint = closes[0].joint_name.replace("_", " ")
-            self._speak_async(random.choice(CLOSE_PHRASES).format(joint=joint))
+            self._speak_async(self._pick(CLOSE_PHRASES).format(joint=joint))
         elif misses:
             joint  = misses[0].joint_name.replace("_", " ")
             actual = misses[0].actual_angle
             target = misses[0].target_angle
             if actual < target:
-                self._speak_async(random.choice(EXTEND_PHRASES).format(joint=joint))
+                self._speak_async(self._pick(EXTEND_PHRASES).format(joint=joint))
             else:
-                self._speak_async(random.choice(BEND_PHRASES).format(joint=joint))
+                self._speak_async(self._pick(BEND_PHRASES).format(joint=joint))
 
     def feedback_no_body(self) -> None:
         if not self._can_speak():
             return
-        self._speak_async(random.choice(NO_BODY_PHRASES))
+        self._speak_async(self._pick(NO_BODY_PHRASES))
 
     def feedback_aligned(self) -> None:
         if not self._can_speak():
