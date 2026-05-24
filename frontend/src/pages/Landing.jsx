@@ -10,11 +10,18 @@ export default function Landing({ onStart }) {
   const [moves,    setMoves]    = useState([]);
   const [selected, setSelected] = useState(null);
   const [loading,  setLoading]  = useState(false);
+  const [fetching, setFetching] = useState(true);
+  const [error,    setError]    = useState(null);
 
   useEffect(() => {
     fetch("http://localhost:8000/moves")
       .then((r) => r.json())
-      .then((d) => { setMoves(d.moves); if (d.moves.length) setSelected(d.moves[0].id); });
+      .then((d) => {
+        setMoves(d.moves);
+        if (d.moves.length) setSelected(d.moves[0].id);
+      })
+      .catch(() => setError("Cannot connect to backend — is uvicorn running?"))
+      .finally(() => setFetching(false));
   }, []);
 
   const handleStart = async () => {
@@ -22,7 +29,34 @@ export default function Landing({ onStart }) {
     await onStart({ move_id: selected });
     setLoading(false);
   };
-
+  if (fetching) return (
+    <div style={{ minHeight:"100vh", background:"#060608",
+      fontFamily:"'Anton','Arial Black',sans-serif",
+      display:"flex", alignItems:"center", justifyContent:"center",
+      flexDirection:"column", gap:16 }}>
+      <div style={{ fontSize:11, letterSpacing:"0.3em", color:"#ff2d2d" }}>
+        BREAKDANCE COACH
+      </div>
+      <div style={{ fontSize:13, letterSpacing:"0.2em", color:"#333" }}>
+        LOADING MOVES...
+      </div>
+    </div>
+  );
+  
+  if (error) return (
+    <div style={{ minHeight:"100vh", background:"#060608",
+      fontFamily:"'Anton','Arial Black',sans-serif",
+      display:"flex", alignItems:"center", justifyContent:"center",
+      flexDirection:"column", gap:16 }}>
+      <div style={{ fontSize:11, letterSpacing:"0.3em", color:"#ff2d2d" }}>
+        CONNECTION ERROR
+      </div>
+      <div style={{ fontSize:13, letterSpacing:"0.2em", color:"#555", maxWidth:400, textAlign:"center" }}>
+        {error}
+      </div>
+    </div>
+  );
+  
   return (
     <div style={{ minHeight:"100vh", background:"#060608",
       fontFamily:"'Anton','Arial Black',sans-serif", color:"#fff" }}>

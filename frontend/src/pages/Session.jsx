@@ -24,7 +24,10 @@ export default function Session({ sessionId, onEnd }) {
   const { sendFrame }                              = useWebSocket(sessionId, handleMessage);
   const { videoRef, canvasRef, startCapture, stopCapture } = useCamera(sendFrame, 15);
 
-  useEffect(() => { startCapture(); return () => stopCapture(); }, [startCapture, stopCapture]);
+  useEffect(() => {
+    const timer = setTimeout(() => startCapture(), 1000);
+    return () => { clearTimeout(timer); stopCapture(); };
+  }, [startCapture, stopCapture]);
 
   return (
     <div style={{ minHeight:"100vh", background:"#060608",
