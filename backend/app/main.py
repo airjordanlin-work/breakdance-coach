@@ -13,9 +13,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app import overlay
+from backend.app import overlay
 from app.buffer import PoseBuffer, WINDOW_LEN
-from app.dtw_engine import DTWEngine
+from backend.app.dtw_engine import DTWEngine
 from app.pose_estimator import PoseEstimator, is_pose_reliable
 from app.scorer import Scorer, _load_keyframes, _reference_frame_index, _match_keyframe
 from app.voice import VoiceCoach
@@ -27,7 +27,8 @@ KEYFRAME_FLASH_FRAMES = 30
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Breakdance Coach — real-time move feedback")
     parser.add_argument("--source", default="webcam")
-    parser.add_argument("--reference-dir", type=Path, default=Path("reference_moves"))
+    parser.add_argument("--reference-dir", type=Path, 
+                    default=Path(__file__).resolve().parent.parent / "reference_moves")
     parser.add_argument("--model-complexity", type=int, choices=[0, 1, 2], default=0)
     parser.add_argument("--window-name", default="Breakdance Coach")
     parser.add_argument(
