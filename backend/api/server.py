@@ -1,24 +1,16 @@
 """
-FastAPI backend — WebSocket streaming for Breakdance Coach.
-
-Endpoints:
-    GET  /health
-    GET  /moves
-    POST /session/start
-    WS   /ws/{session_id}
+FastAPI backend — sends landmark JSON instead of annotated JPEG frames.
+Much faster (2KB vs 50KB per frame) and enables skeleton-only frontend.
 """
 
 from __future__ import annotations
 
-import base64
-import json
-import uuid
+import base64, json, uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
-import cv2
-import numpy as np
+import cv2, numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -32,7 +24,6 @@ from app.pose_estimator import PoseEstimator, is_pose_reliable
 from app.buffer import PoseBuffer, WINDOW_LEN
 from app.dtw_engine import DTWEngine
 from app.scorer import Scorer
-from app import overlay
 
 app = FastAPI(title="Breakdance Coach API")
 app.add_middleware(
@@ -43,20 +34,66 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-REFERENCE_DIR      = Path(__file__).resolve().parent.parent / "reference_moves"
-KEYFRAME_FLASH     = 30
+REFERENCE_DIR  = Path(__file__).resolve().parent.parent / "reference_moves"
+KEYFRAME_FLASH = 30
 _sessions: dict[str, "CoachingSession"] = {}
-_executor          = ThreadPoolExecutor(max_workers=4)
+_executor      = ThreadPoolExecutor(max_workers=4)
+
+# MediaPipe body connections for frontend skeleton renderer
+BODY_CONNECTIONS = [
+    [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+    [11, 23], [12, 24], [23, 24],
+    [23, 25], [25, 27], [24, 26], [26, 28],
+    [27, 31], [28, 32],
+]
+
+# T-pose ghost in body space — same as overlay.py
+GHOST_BONES = [
+    [0.00,-1.80, 0.00,-1.50],
+    [-0.50,-1.45, 0.50,-1.45],
+    [-0.50,-1.45,-1.10,-1.45],
+    [-1.10,-1.45,-1.65,-1.45],
+    [0.50,-1.45, 1.10,-1.45],
+    [1.10,-1.45, 1.65,-1.45],
+    [-0.50,-1.45,-0.20,-0.80],
+    [0.50,-1.45, 0.20,-0.80],
+    [-0.20,-0.80, 0.20,-0.80],
+    [-0.20,-0.80,-0.22,-0.20],
+    [0.20,-0.80, 0.22,-0.20],
+    [-0.22,-0.20,-0.22, 0.48],
+    [0.22,-0.20, 0.22, 0.48],
+]
 
 
 class SessionConfig(BaseModel):
-    voice_gender: str  = "female"
-    zoom: float        = 1.0
+    voice_gender: str = "female"
+    zoom: float       = 1.0
+
+
+def _diagnose_visibility(pose_frame) -> Optional[str]:
+    """Return a specific guidance string based on which joints are missing."""
+    vis = pose_frame.visibility
+    hips_ok      = vis[23] >= 0.4 and vis[24] >= 0.4
+    shoulders_ok = vis[11] >= 0.4 and vis[12] >= 0.4
+    feet_ok      = vis[27] >= 0.4 and vis[28] >= 0.4
+    hands_ok     = vis[15] >= 0.4 and vis[16] >= 0.4
+
+    if not hips_ok and not shoulders_ok:
+        return "Too close — step back until full body is visible"
+    if not hips_ok:
+        return "Step back — hips not in frame"
+    if not feet_ok and not hands_ok:
+        return "Step back more — hands and feet not visible"
+    if not feet_ok:
+        return "Step back — feet not in frame"
+    if not hands_ok:
+        return "Raise camera or step back — hands not visible"
+    return None
 
 
 class CoachingSession:
     def __init__(self, config: SessionConfig) -> None:
-        self.estimator     = PoseEstimator(model_complexity=0)
+        self.estimator     = PoseEstimator(model_complexity=1)  # bumped to 1 for better unusual poses
         self.buf           = PoseBuffer()
         self.engine        = DTWEngine(REFERENCE_DIR)
         self.scorer        = Scorer(REFERENCE_DIR)
@@ -66,11 +103,12 @@ class CoachingSession:
         self.dtw_result    = None
         self.pose_frame    = None
         self.frame_idx     = 0
+        self.config        = config
+
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
         self.estimator.process(dummy)
 
     def process_frame(self, b64: str) -> dict:
-        """Synchronous frame processing — runs in thread pool."""
         data  = base64.b64decode(b64)
         arr   = np.frombuffer(data, np.uint8)
         bgr   = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -78,9 +116,18 @@ class CoachingSession:
         rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pose  = self.estimator.process(rgb, keep_raw=True)
 
-        if pose is not None and is_pose_reliable(pose):
+        body_visible = pose is not None and is_pose_reliable(pose)
+        guidance     = None
+
+        if body_visible:
             self.pose_frame = pose
             self.buf.add(pose)
+            guidance = _diagnose_visibility(pose)
+        else:
+            if pose is not None:
+                guidance = _diagnose_visibility(pose)
+            else:
+                guidance = "No body detected — step into frame"
 
         if self.buf.is_ready() and self.future is None:
             window      = [f.landmarks for f in self.buf._frames]
@@ -99,33 +146,49 @@ class CoachingSession:
                     self.score_result  = s
                     self.flash_counter = KEYFRAME_FLASH
 
+        if self.flash_counter > 0:
+            self.flash_counter -= 1
+
         fill_ratio = len(self.buf) / WINDOW_LEN
         move_name  = (self.dtw_result.move_name
                       if self.dtw_result else self.engine.move_name)
-
-        annotated, self.flash_counter = overlay.render(
-            frame,
-            pose_frame=self.pose_frame,
-            dtw_result=self.dtw_result,
-            score_result=self.score_result,
-            stats=self.scorer.stats(),
-            fill_ratio=fill_ratio,
-            flash_counter=self.flash_counter,
-            move_name=move_name,
-            buf_len=len(self.buf),
-        )
-
+        stats      = self.scorer.stats()
         self.frame_idx += 1
-        stats = self.scorer.stats()
 
-        _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 70])
-        frame_b64 = base64.b64encode(buf).decode()
+        # build landmark payload for frontend skeleton renderer
+        landmarks  = []
+        visibility = []
+        hip_cx = hip_cy = scale = None
+
+        if self.pose_frame is not None and self.pose_frame.raw_landmarks is not None:
+            raw = self.pose_frame.raw_landmarks   # (33, 3) image space 0-1
+            vis = self.pose_frame.visibility
+
+            landmarks  = raw.tolist()
+            visibility = vis.tolist()
+
+            # compute anchor for ghost skeleton
+            lh, rh = raw[23], raw[24]
+            ls, rs = raw[11], raw[12]
+            if all(vis[i] >= 0.4 for i in [11, 12, 23, 24]):
+                hip_cx = float((lh[0] + rh[0]) / 2)
+                hip_cy = float((lh[1] + rh[1]) / 2)
+                scale  = float(abs(rs[0] - ls[0]) * 0.9)
 
         return {
-            "frame":      frame_b64,
-            "fill_ratio": round(fill_ratio, 3),
-            "aligned":    bool(self.dtw_result.aligned) if self.dtw_result else False,
-            "move_name":  move_name or "",
+            "type":        "frame",
+            "landmarks":   landmarks,
+            "visibility":  visibility,
+            "ghost_bones": GHOST_BONES if fill_ratio >= 1.0 else [],
+            "ghost_anchor": {
+                "hip_cx": hip_cx,
+                "hip_cy": hip_cy,
+                "scale":  scale,
+            } if hip_cx is not None else None,
+            "aligned":     bool(self.dtw_result.aligned) if self.dtw_result else False,
+            "fill_ratio":  round(fill_ratio, 3),
+            "move_name":   move_name or "",
+            "guidance":    guidance,
             "stats": {
                 "total_points": round(stats.total_points),
                 "grade":        stats.grade,
@@ -155,10 +218,8 @@ class CoachingSession:
 
 def _infer_difficulty(stem: str) -> str:
     s = stem.lower()
-    if any(x in s for x in ["toprock", "basic", "_00", "_01"]):
-        return "Beginner"
-    if any(x in s for x in ["footwork", "freeze", "_02", "_03", "_04"]):
-        return "Intermediate"
+    if any(x in s for x in ["toprock", "basic", "_00", "_01"]): return "Beginner"
+    if any(x in s for x in ["footwork", "freeze", "_02", "_03", "_04"]): return "Intermediate"
     return "Advanced"
 
 
@@ -219,11 +280,17 @@ async def ws_endpoint(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         pass
     finally:
+        pass
+        # if session_id in _sessions:
+        #     _sessions[session_id].close()
+        #     del _sessions[session_id]
+
+    @app.delete("/session/{session_id}")
+    async def end_session(session_id: str):
         if session_id in _sessions:
             _sessions[session_id].close()
             del _sessions[session_id]
-
-
+        return {"status": "closed"}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
